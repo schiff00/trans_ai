@@ -3,6 +3,9 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 import logging
 import sys
 import google.generativeai as genai
+import pandas as pd
+import threading
+import os
 
 class GameDialogueTranslator(tk.Frame):
     def __init__(self, master=None):
@@ -12,12 +15,13 @@ class GameDialogueTranslator(tk.Frame):
         self.center_window(1200, 800)
         self.pack(fill=tk.BOTH, expand=True)
         self.log_text = None
-        self.create_log_window()  # 로그 창을 먼저 생성
+        self.create_log_window()
         self.load_api_key()
         self.setup_gemini()
         self.system_prompt = ""
         self.create_widgets()
         self.bind_buttons()
+        self.excel_data = None
 
     def load_api_key(self):
         try:
@@ -50,35 +54,55 @@ class GameDialogueTranslator(tk.Frame):
         self.master.geometry(f"{width}x{height}+{x}+{y}")
 
     def create_widgets(self):
-        # 상단 프레임
+        # 전체 상단 프레임
         top_frame = tk.Frame(self)
         top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
 
-        # 대사 엑셀 로드 버튼
-        self.load_excel_button = tk.Button(top_frame, text="대사 엑셀 로드")
+        # 왼쪽 프레임 (엑셀 로드 버튼들을 위한)
+        left_frame = tk.Frame(top_frame)
+        left_frame.pack(side=tk.LEFT, fill=tk.Y)
+
+        # 오른쪽 프레임 (시스템 프롬프트 설정과 프롬프트 보내기 버튼을 위한)
+        right_frame = tk.Frame(top_frame)
+        right_frame.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # 대사 엑셀 로드 프레임
+        dialogue_frame = tk.Frame(left_frame)
+        dialogue_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        self.load_excel_button = tk.Button(dialogue_frame, text="대사 엑셀 로드", width=20)
         self.load_excel_button.pack(side=tk.LEFT, padx=5)
+        self.loaded_file_label = tk.Label(dialogue_frame, text="로드된 파일: 없음", anchor="w")
+        self.loaded_file_label.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
-        # 캐릭터 시트 로드 버튼
-        self.load_character_sheet_button = tk.Button(top_frame, text="캐릭터 시트 로드")
+        # 캐릭터 시트 로드 프레임
+        character_frame = tk.Frame(left_frame)
+        character_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        self.load_character_sheet_button = tk.Button(character_frame, text="캐릭터 시트 로드", width=20)
         self.load_character_sheet_button.pack(side=tk.LEFT, padx=5)
+        self.loaded_character_label = tk.Label(character_frame, text="로드된 파일: 없음", anchor="w")
+        self.loaded_character_label.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
-        # 글로서리 엑셀 로드 버튼
-        self.load_glossary_button = tk.Button(top_frame, text="글로서리 엑셀 로드")
+        # 글로서리 엑셀 로드 프레임
+        glossary_frame = tk.Frame(left_frame)
+        glossary_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+        self.load_glossary_button = tk.Button(glossary_frame, text="글로서리 엑셀 로드", width=20)
         self.load_glossary_button.pack(side=tk.LEFT, padx=5)
+        self.loaded_glossary_label = tk.Label(glossary_frame, text="로드된 파일: 없음", anchor="w")
+        self.loaded_glossary_label.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+
+        # 시스템 프롬프트 설정 버튼
+        self.set_system_prompt_button = tk.Button(right_frame, text="시스템 프롬프트 설정")
+        self.set_system_prompt_button.pack(side=tk.TOP, padx=5, pady=5)
+
+        # 프롬프트 보내기 버튼
+        self.send_prompt_button = tk.Button(right_frame, text="프롬프트 보내기")
+        self.send_prompt_button.pack(side=tk.TOP, padx=5, pady=5)
 
         # 대사 엑셀의 시트 선택 콤보
-        self.sheet_select_combo = ttk.Combobox(top_frame, values=["시트1", "시트2", "시트3"])
-        self.sheet_select_combo.pack(side=tk.LEFT, padx=5)
+        self.sheet_select_combo = ttk.Combobox(left_frame, values=["시트1", "시트2", "시트3"])
+        self.sheet_select_combo.pack(side=tk.TOP, padx=5, pady=5)
         self.sheet_select_combo.set("시트 선택")  # 기본값 설정
         self.sheet_select_combo.bind("<<ComboboxSelected>>", self.on_sheet_selected)
-
-        # 시스템 프롬프트 설정 버튼 추가
-        self.set_system_prompt_button = tk.Button(top_frame, text="시스템 프롬프트 설정")
-        self.set_system_prompt_button.pack(side=tk.LEFT, padx=5)
-
-        # 프롬프트 보내기 버튼 추가
-        self.send_prompt_button = tk.Button(top_frame, text="프롬프트 보내기")
-        self.send_prompt_button.pack(side=tk.LEFT, padx=5)
 
         # 번역 버튼 프레임
         translate_button_frame = tk.Frame(self)
@@ -130,13 +154,48 @@ class GameDialogueTranslator(tk.Frame):
         self.send_prompt_button.config(command=self.get_user_prompt)
 
     def on_load_excel(self):
-        self.log_message("대사 엑셀 로드 버튼이 클릭되었습니다.")
+        self.load_file("대사 엑셀", self.load_excel_button, self.loaded_file_label)
 
     def on_load_character_sheet(self):
-        self.log_message("캐릭터 시트 로드 버튼이 클릭되었습니다.")
+        self.load_file("캐릭터 시트", self.load_character_sheet_button, self.loaded_character_label)
 
     def on_load_glossary(self):
-        self.log_message("글로서리 엑셀 로드 버튼이 클릭되었습니다.")
+        self.load_file("글로서리 엑셀", self.load_glossary_button, self.loaded_glossary_label)
+
+    def load_file(self, file_type, button, label):
+        file_path = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx;*.xls")])
+        if file_path:
+            self.log_message(f"{file_type} 로드 중...")
+            button.config(state=tk.DISABLED)
+            file_name = os.path.basename(file_path)
+            label.config(text=f"로드된 파일: {file_name}")
+            threading.Thread(target=self.load_excel_async, args=(file_path, file_type, button), daemon=True).start()
+        else:
+            self.log_message("파일 선택이 취소되었습니다.")
+
+    def load_excel_async(self, file_path, file_type, button):
+        try:
+            # 엑셀 파일 로드
+            self.excel_data = pd.read_excel(file_path, sheet_name=None)
+            
+            # 시트 이름 가져오기
+            sheet_names = list(self.excel_data.keys())
+            
+            # GUI 업데이트는 메인 스레드에서 실행
+            self.master.after(0, self.update_gui_after_load, sheet_names, file_path, file_type)
+        except Exception as e:
+            self.master.after(0, self.log_message, f"{file_type} 로드 중 오류 발생: {str(e)}")
+        finally:
+            self.master.after(0, lambda: button.config(state=tk.NORMAL))
+
+    def update_gui_after_load(self, sheet_names, file_path, file_type):
+        # 콤보박스 업데이트
+        self.sheet_select_combo['values'] = sheet_names
+        if sheet_names:
+            self.sheet_select_combo.set(sheet_names[0])
+        
+        self.log_message(f"{file_type}이(가) 성공적으로 로드되었습니다: {file_path}")
+        self.log_message(f"사용 가능한 시트: {', '.join(sheet_names)}")
 
     def on_translate_selected(self):
         self.log_message("선택 번역하기 버튼이 클릭되었습니다.")
